@@ -18,23 +18,19 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-            - name: STORE_ROOT
-              value: {{ .Values.storeRoot }}
             - name: CACHE_URL
               value: {{ .Values.cacheUrl }}
-            - name: MOUNTS_ROOT
-              value: {{ .Values.mountsPath }}
           volumeMounts:
             - name: nix-store
-              mountPath: {{ .Values.storeRoot }}
+              mountPath: /nix/store
             - name: mounts
-              mountPath: {{ .Values.mountsPath }}
+              mountPath: /var/lib/nixfs/mounts
       volumes:
         - name: nix-store
           hostPath:
-            path: {{ .Values.hostStorePath }}
+            path: /var/lib/nixfs/store
             type: DirectoryOrCreate
         - name: mounts
           hostPath:
-            path: {{ .Values.mountsPath }}
+            path: /var/lib/nixfs/mounts
             type: DirectoryOrCreate

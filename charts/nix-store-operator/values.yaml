@@ -3,9 +3,6 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-storeRoot: /nix/store
-hostStorePath: /var/lib/nixfs/store
-mountsPath: /var/lib/nixfs/mounts
 cacheUrl: https://cache.nixos.org
 
 serviceAccount:

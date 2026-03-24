@@ -4,8 +4,8 @@
 require 'kubeclient'
 require 'fileutils'
 
-STORE  = ENV.fetch('STORE_ROOT', '/nix/store')
-MOUNTS = ENV.fetch('MOUNTS_ROOT', '/var/lib/nixfs/mounts')
+STORE  = '/nix/store'
+MOUNTS = '/var/lib/nixfs/mounts'
 CACHE  = ENV.fetch('CACHE_URL', 'https://cache.nixos.org')
 LABEL  = 'nix-store-operator.ghcr.io/mount=true'
 
