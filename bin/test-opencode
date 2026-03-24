@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLUSTER_NAME="nix-store-operator-test"
+FUSE_IMAGE="opencode-fuse-daemon:latest"
+KUBECONFIG="/tmp/${CLUSTER_NAME}.yaml"
+IMAGES_DIR="/tmp/${CLUSTER_NAME}-images"
+BUILD_DIR="/tmp/${CLUSTER_NAME}-build"
+
+cleanup() {
+  echo "--- cleanup ---"
+  docker rm -f "$CLUSTER_NAME" 2>/dev/null || true
+  chmod -R u+w "$BUILD_DIR" 2>/dev/null || true
+  rm -rf "$KUBECONFIG" "$IMAGES_DIR" "$BUILD_DIR"
+}
+trap cleanup EXIT
+
+# ── build opencode ──────────────────────────────────────────────────
+
+echo "--- building opencode ---"
+
+OC_PATH=$(nix build github:AodhanHayter/opencode-flake --no-link --print-out-paths | head -1)
+if [ -z "$OC_PATH" ]; then
+  echo "FAIL: nix build failed"
+  exit 1
+fi
+OC_BIN=$(basename "$OC_PATH")
+OC_CLOSURE=$(nix-store -qR "$OC_PATH")
+
+echo "opencode: $OC_PATH"
+echo "closure: $(echo "$OC_CLOSURE" | wc -l) paths"
+
+# ── build fuse-daemon image ─────────────────────────────────────────
+
+echo "--- building image ---"
+
+chmod -R u+w "$BUILD_DIR" 2>/dev/null || true
+rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
+
+# Whitelist = full closure
+echo "$OC_CLOSURE" > "$BUILD_DIR/store-whitelist"
+
+# Copy fuse-daemon
+cp fuse-daemon.rb "$BUILD_DIR/fuse-daemon.rb"
+
+# Copy non-cached store paths into the image. Check each path in the closure
+# against cache.nixos.org -- if it's not there, it goes in the image.
+mkdir -p "$BUILD_DIR/store"
+echo "checking which paths are cached..."
+while IFS= read -r path; do
+  hash=$(basename "$path" | cut -d- -f1)
+  code=$(curl -s -o /dev/null -w "%{http_code}" -I "https://cache.nixos.org/${hash}.narinfo")
+  bn=$(basename "$path")
+  if [ "$code" != "200" ]; then
+    echo "  IMAGE  $bn (not in cache)"
+    cp -rL "$path" "$BUILD_DIR/store/$bn"
+    chmod -R u+w "$BUILD_DIR/store/$bn"
+  else
+    echo "  CACHE  $bn"
+  fi
+done <<< "$OC_CLOSURE"
+
+cat > "$BUILD_DIR/Dockerfile" <<'DOCKERFILE'
+FROM ruby:3.3-alpine
+RUN apk add --no-cache fuse ca-certificates \
+ && gem install rfuse --no-document \
+ && echo "user_allow_other" > /etc/fuse.conf
+ADD https://github.com/simonfxr/nix-download/releases/download/v0.2.0/nix-download_0.2.0_linux_amd64 /usr/local/bin/nix-download
+RUN chmod +x /usr/local/bin/nix-download
+COPY fuse-daemon.rb /bin/fuse-daemon
+RUN chmod +x /bin/fuse-daemon
+COPY store-whitelist /etc/nix/store-whitelist
+RUN mkdir -p /data/store
+COPY store/ /data/store/
+ENTRYPOINT ["ruby", "/bin/fuse-daemon"]
+DOCKERFILE
+
+docker build -t "$FUSE_IMAGE" "$BUILD_DIR"
+
+# ── start k3s ───────────────────────────────────────────────────────
+
+echo "--- saving image ---"
+mkdir -p "$IMAGES_DIR"
+docker save "$FUSE_IMAGE" -o "$IMAGES_DIR/fuse-daemon.tar"
+
+echo "--- starting k3s ---"
+docker run -d \
+  --name "$CLUSTER_NAME" \
+  --privileged \
+  --tmpfs /run \
+  --tmpfs /var/run \
+  -v "$IMAGES_DIR:/images:ro" \
+  rancher/k3s:latest server --disable=traefik
+
+sleep 2
+docker exec "$CLUSTER_NAME" mount --make-rshared /
+
+echo "waiting for k3s..."
+for i in $(seq 1 60); do
+  if docker exec "$CLUSTER_NAME" kubectl get nodes 2>/dev/null | grep -q ' Ready '; then
+    break
+  fi
+  sleep 3
+done
+
+echo "waiting for cluster bootstrap..."
+for i in $(seq 1 30); do
+  if docker exec "$CLUSTER_NAME" kubectl -n default get serviceaccount default >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+K3S_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CLUSTER_NAME")
+docker exec "$CLUSTER_NAME" cat /etc/rancher/k3s/k3s.yaml \
+  | sed "s|127.0.0.1|${K3S_IP}|" > "$KUBECONFIG"
+export KUBECONFIG
+kubectl get nodes
+
+# ── load image ──────────────────────────────────────────────────────
+
+echo "--- importing image into k3s ---"
+docker exec "$CLUSTER_NAME" ctr images import /images/fuse-daemon.tar
+
+# ── deploy ──────────────────────────────────────────────────────────
+
+echo "--- deploying opencode ---"
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opencode
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: opencode-server
+  namespace: opencode
+spec:
+  containers:
+    - name: fuse-daemon
+      image: docker.io/library/$FUSE_IMAGE
+      imagePullPolicy: Never
+      securityContext:
+        privileged: true
+      command: ["ruby", "/bin/fuse-daemon",
+        "--root",      "/data/store",
+        "--mount",     "/mnt/nix/store",
+        "--whitelist", "/etc/nix/store-whitelist"]
+      volumeMounts:
+        - name: nix
+          mountPath: /mnt/nix
+          mountPropagation: Bidirectional
+    - name: opencode
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "waiting for FUSE mount..."
+          while ! ls /nix/store/${OC_BIN}/bin/opencode 2>/dev/null; do
+            sleep 1
+          done
+          echo "starting opencode serve"
+          exec /nix/store/${OC_BIN}/bin/opencode serve --hostname 0.0.0.0 --port 4096
+      ports:
+        - name: http
+          containerPort: 4096
+          protocol: TCP
+      env:
+        - name: HOME
+          value: /home/opencode
+      startupProbe:
+        httpGet:
+          path: /doc
+          port: http
+        initialDelaySeconds: 5
+        periodSeconds: 5
+        failureThreshold: 60
+      readinessProbe:
+        httpGet:
+          path: /doc
+          port: http
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /doc
+          port: http
+        periodSeconds: 30
+      volumeMounts:
+        - name: nix
+          mountPath: /nix
+          mountPropagation: HostToContainer
+        - name: home
+          mountPath: /home/opencode
+  volumes:
+    - name: nix
+      emptyDir: {}
+    - name: home
+      emptyDir: {}
+EOF
+
+echo "waiting for pod (this will take a while — fetching opencode's closure)..."
+
+# Wait for the fuse-daemon container to start, then tail its logs
+(
+  for i in $(seq 1 30); do
+    kubectl logs -n opencode opencode-server -c fuse-daemon --tail=1 >/dev/null 2>&1 && break
+    sleep 2
+  done
+  kubectl logs -n opencode opencode-server -c fuse-daemon -f 2>/dev/null
+) &
+LOGS_PID=$!
+
+kubectl wait -n opencode pod/opencode-server --for=condition=Ready --timeout=600s || {
+  kill $LOGS_PID 2>/dev/null
+  echo "FAIL: pod not ready"
+  kubectl describe pod -n opencode opencode-server
+  echo "--- fuse-daemon logs ---"
+  kubectl logs -n opencode opencode-server -c fuse-daemon --tail=50
+  echo "--- opencode logs ---"
+  kubectl logs -n opencode opencode-server -c opencode --tail=50
+  echo ""
+  echo "--- cluster still running: export KUBECONFIG=$KUBECONFIG ---"
+  echo "--- press enter to cleanup ---"
+  read -r
+  exit 1
+}
+
+kill $LOGS_PID 2>/dev/null
+
+# ── health check ────────────────────────────────────────────────────
+
+echo "--- checking health endpoint ---"
+
+kubectl exec -n opencode opencode-server -c opencode -- \
+  wget --spider -q http://127.0.0.1:4096/doc 2>&1 || {
+  echo "FAIL: opencode /doc endpoint not responding"
+  kubectl logs -n opencode opencode-server -c opencode --tail=20
+  exit 1
+}
+
+echo ""
+echo "PASS: opencode server is running (served /doc)"
+
+# ── API smoke tests ─────────────────────────────────────────────────
+
+echo "--- API smoke tests ---"
+API="http://127.0.0.1:4096"
+EXEC="kubectl exec -n opencode opencode-server -c opencode --"
+
+hit() {
+  local method="$1" path="$2"
+  echo ""
+  echo "$method $path"
+  if [ "$method" = "GET" ]; then
+    $EXEC wget -q -O- "${API}${path}" 2>&1 | head -3 || true
+  elif [ "$method" = "POST" ]; then
+    $EXEC wget -q -O- --post-data="$3" --header='Content-Type: application/json' "${API}${path}" 2>&1 | head -3 || true
+  fi
+}
+
+hit GET  /global/health
+hit GET  /session
+hit GET  /config
+hit GET  /agent
+hit GET  /command
+hit GET  /provider
+hit GET  /project
+hit GET  /path
+hit POST /session '{"title":"fuse-daemon-test"}'
+
+echo ""
+echo "All API tests complete."

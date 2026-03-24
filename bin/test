@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLUSTER_NAME="nix-store-operator-test"
+FUSE_IMAGE="fuse-daemon-test:latest"
+KUBECONFIG="/tmp/${CLUSTER_NAME}.yaml"
+IMAGES_DIR="/tmp/${CLUSTER_NAME}-images"
+BUILD_DIR="/tmp/${CLUSTER_NAME}-build"
+
+cleanup() {
+  echo "--- cleanup ---"
+  docker rm -f "$CLUSTER_NAME" 2>/dev/null || true
+  rm -rf "$KUBECONFIG" "$IMAGES_DIR" "$BUILD_DIR"
+}
+trap cleanup EXIT
+
+# ── build test image ────────────────────────────────────────────────
+
+echo "--- building fuse-daemon test image ---"
+
+COWSAY_PATH=$(nix build nixpkgs#cowsay --no-link --print-out-paths 2>/dev/null | grep -v '\-man$' | head -1)
+COWSAY_CLOSURE=$(nix-store -qR "$COWSAY_PATH")
+COWSAY_BIN=$(basename "$COWSAY_PATH")
+
+rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
+echo "$COWSAY_CLOSURE" > "$BUILD_DIR/store-whitelist"
+cp fuse-daemon.rb "$BUILD_DIR/fuse-daemon.rb"
+
+cat > "$BUILD_DIR/Dockerfile" <<'DOCKERFILE'
+FROM ruby:3.3-alpine
+RUN apk add --no-cache fuse ca-certificates \
+ && gem install rfuse --no-document \
+ && echo "user_allow_other" > /etc/fuse.conf
+ADD https://github.com/simonfxr/nix-download/releases/download/v0.2.0/nix-download_0.2.0_linux_amd64 /usr/local/bin/nix-download
+RUN chmod +x /usr/local/bin/nix-download
+COPY fuse-daemon.rb /bin/fuse-daemon
+RUN chmod +x /bin/fuse-daemon
+COPY store-whitelist /etc/nix/store-whitelist
+RUN mkdir -p /data/store
+ENTRYPOINT ["ruby", "/bin/fuse-daemon"]
+DOCKERFILE
+
+docker build -t "$FUSE_IMAGE" "$BUILD_DIR"
+
+# ── start k3s ───────────────────────────────────────────────────────
+
+echo "--- saving image ---"
+mkdir -p "$IMAGES_DIR"
+docker save "$FUSE_IMAGE" -o "$IMAGES_DIR/fuse-daemon.tar"
+
+echo "--- starting k3s ---"
+docker run -d \
+  --name "$CLUSTER_NAME" \
+  --privileged \
+  --tmpfs /run \
+  --tmpfs /var/run \
+  -v "$IMAGES_DIR:/images:ro" \
+  rancher/k3s:latest server --disable=traefik
+
+sleep 2
+docker exec "$CLUSTER_NAME" mount --make-rshared /
+
+echo "waiting for k3s..."
+for i in $(seq 1 60); do
+  if docker exec "$CLUSTER_NAME" kubectl get nodes 2>/dev/null | grep -q ' Ready '; then
+    break
+  fi
+  sleep 3
+done
+
+echo "waiting for cluster bootstrap..."
+for i in $(seq 1 30); do
+  if docker exec "$CLUSTER_NAME" kubectl -n default get serviceaccount default >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+K3S_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CLUSTER_NAME")
+docker exec "$CLUSTER_NAME" cat /etc/rancher/k3s/k3s.yaml \
+  | sed "s|127.0.0.1|${K3S_IP}|" > "$KUBECONFIG"
+export KUBECONFIG
+kubectl get nodes
+
+# ── load image ──────────────────────────────────────────────────────
+
+echo "--- importing image into k3s ---"
+docker exec "$CLUSTER_NAME" ctr images import /images/fuse-daemon.tar
+
+# ── deploy test pod ─────────────────────────────────────────────────
+
+echo "--- deploying test pod ---"
+
+# The fuse-daemon mounts FUSE at /mnt/nix/store (on the shared volume).
+# Its backing store is /data/store -- completely separate from the mount.
+# nix-download writes to /data/store, FUSE serves from /data/store.
+# The app container sees /nix/store via the shared volume.
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fuse-test
+  namespace: test
+spec:
+  containers:
+    - name: fuse-daemon
+      image: docker.io/library/$FUSE_IMAGE
+      imagePullPolicy: Never
+      securityContext:
+        privileged: true
+      command: ["ruby", "/bin/fuse-daemon",
+        "--root",      "/data/store",
+        "--mount",     "/mnt/nix/store",
+        "--whitelist", "/etc/nix/store-whitelist"]
+      volumeMounts:
+        - name: nix
+          mountPath: /mnt/nix
+          mountPropagation: Bidirectional
+    - name: app
+      image: busybox:latest
+      command: ["/bin/sh", "-c", "sleep infinity"]
+      volumeMounts:
+        - name: nix
+          mountPath: /nix
+          mountPropagation: HostToContainer
+  volumes:
+    - name: nix
+      emptyDir: {}
+EOF
+
+echo "waiting for pod..."
+kubectl wait -n test pod/fuse-test --for=condition=Ready --timeout=180s || {
+  echo "FAIL: pod not ready"
+  kubectl describe pod -n test fuse-test
+  kubectl logs -n test fuse-test -c fuse-daemon --tail=30
+  exit 1
+}
+
+# ── run cowsay through FUSE ─────────────────────────────────────────
+
+echo "--- running cowsay through FUSE ---"
+
+# Give FUSE a moment to settle
+sleep 2
+
+OUTPUT=$(kubectl exec -n test fuse-test -c app -- \
+  /nix/store/${COWSAY_BIN}/bin/cowsay "nix-store-operator works" 2>&1) || {
+  echo "FAIL: cowsay exec failed"
+  echo "$OUTPUT"
+  echo "--- fuse-daemon logs ---"
+  kubectl logs -n test fuse-test -c fuse-daemon --tail=50
+  echo ""
+  echo "--- debug: listing backing store ---"
+  kubectl exec -n test fuse-test -c fuse-daemon -- ls /data/store/ 2>&1 | head -20
+  echo ""
+  echo "--- debug: listing FUSE mount from app ---"
+  kubectl exec -n test fuse-test -c app -- ls /nix/store/ 2>&1 | head -20
+  echo ""
+  echo "--- debug: checking libxcrypt ---"
+  kubectl exec -n test fuse-test -c fuse-daemon -- find /data/store -name 'libcrypt*' 2>&1
+  echo ""
+  echo "--- debug: checking perl RPATH ---"
+  kubectl exec -n test fuse-test -c fuse-daemon -- sh -c 'ls /data/store/*perl*/bin/' 2>&1
+  echo ""
+  echo "--- cluster still running. use: export KUBECONFIG=$KUBECONFIG ---"
+  echo "--- press enter to cleanup ---"
+  read -r
+  exit 1
+}
+
+echo "$OUTPUT"
+
+if echo "$OUTPUT" | grep -q "nix-store-operator works"; then
+  echo ""
+  echo "PASS"
+else
+  echo "FAIL: unexpected output"
+  exit 1
+fi
