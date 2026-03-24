@@ -30,7 +30,7 @@ jobs:
             git rm -rf .
             git commit --allow-empty -m "Initialize gh-pages"
             git push origin gh-pages
-            git checkout -
+            git checkout "${GITHUB_SHA}"
           fi
 
       - name: Release charts
