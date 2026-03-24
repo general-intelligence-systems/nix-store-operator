@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+USAGE="Usage: bin/tag-release <major|minor|patch>"
+
+SEGMENT="${1:-}"
+if [[ ! "$SEGMENT" =~ ^(major|minor|patch)$ ]]; then
+  echo "$USAGE" >&2
+  exit 1
+fi
+
+VERSION_FILE="$(git rev-parse --show-toplevel)/.github/release-version"
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "ERROR: $VERSION_FILE not found" >&2
+  exit 1
+fi
+
+current=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+IFS='.' read -r major minor patch <<< "$current"
+
+case "$SEGMENT" in
+  major) major=$((major + 1)); minor=0; patch=0 ;;
+  minor) minor=$((minor + 1)); patch=0 ;;
+  patch) patch=$((patch + 1)) ;;
+esac
+
+version="${major}.${minor}.${patch}"
+tag="v${version}"
+
+existing=$(git tag -l "$tag")
+if [[ -n "$existing" ]]; then
+  echo "ERROR: Tag $tag already exists" >&2
+  exit 1
+fi
+
+echo "$version" > "$VERSION_FILE"
+
+git add "$VERSION_FILE"
+git commit -m "Release ${tag}"
+git tag "$tag"
+git push origin HEAD --tags
+
+echo "${current} -> ${version}"
+echo "Tagged and pushed ${tag}"
