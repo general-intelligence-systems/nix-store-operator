@@ -1,13 +1,15 @@
-FROM nixos/nix:latest
+FROM ruby:3.3-alpine
 
-RUN nix-channel --update \
- && nix-env -iA nixpkgs.ruby nixpkgs.cacert nixpkgs.gcc nixpkgs.gnumake \
- && gem install kubeclient --no-document \
- && nix-env -e gcc gnumake \
- && nix-collect-garbage -d \
- && rm -rf /root/.cache /root/.nix-defexpr /root/.nix-channels
+RUN apk add --no-cache fuse ca-certificates \
+ && gem install rfuse --no-document \
+ && echo "user_allow_other" > /etc/fuse.conf
 
-COPY store-daemon.rb /bin/store-daemon
-RUN chmod +x /bin/store-daemon
+ADD https://github.com/simonfxr/nix-download/releases/download/v0.2.0/nix-download_0.2.0_linux_amd64 /usr/local/bin/nix-download
+RUN chmod +x /usr/local/bin/nix-download
 
-ENTRYPOINT ["ruby", "/bin/store-daemon"]
+COPY fuse-daemon.rb /bin/fuse-daemon
+RUN chmod +x /bin/fuse-daemon
+
+RUN mkdir -p /data/store
+
+ENTRYPOINT ["ruby", "/bin/fuse-daemon"]
