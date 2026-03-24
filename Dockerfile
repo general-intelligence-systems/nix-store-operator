@@ -1,7 +1,7 @@
 FROM nixos/nix:latest
 
 RUN nix-channel --update \
- && nix-env -iA nixpkgs.ruby nixpkgs.cacert
+ && nix-env -iA nixpkgs.ruby nixpkgs.cacert nixpkgs.gcc nixpkgs.gnumake
 
 RUN gem install kubeclient --no-document
 
