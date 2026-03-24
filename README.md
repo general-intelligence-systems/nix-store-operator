@@ -1,12 +1,12 @@
 # nix-store-operator
 
-A DaemonSet that lazily populates `/nix/store` on Kubernetes nodes from a binary cache. App pods mount the shared store and run nix-built binaries directly — no container images required beyond a minimal runner.
+A DaemonSet that lazily populates `/nix/store` on Kubernetes nodes from a binary cache. App pods mount the shared store and run nix-built binaries directly — no fat container images required beyond a minimal runner.
 
 ## How it works
 
-1. You build your app with nix and generate its closure (the full list of store paths it needs)
-2. You create a ConfigMap with that closure list, labeled `nix.cia.net/closure=true`
-3. The store daemon watches for these ConfigMaps and fetches any missing store paths from the binary cache
+1. You build your app with nix and generate its store paths (the full list of `/nix/store` paths it needs)
+2. You create a ConfigMap with that store paths list, labeled `nix-store-operator.ghcr.io/mount=true`
+3. The store daemon watches for these ConfigMaps and fetches any missing store paths from the binary cache using `nix copy`
 4. Your app pod mounts `/var/lib/nixfs/store` as `/nix/store` read-only and runs the binary
 
 ## Install
@@ -18,14 +18,14 @@ helm install store-daemon ./charts/store-daemon
 ## Deploy an app
 
 ```bash
-# Build and get closure
+# Build and get store paths
 nix build .#myapp --print-out-paths
-nix path-info -r .#myapp > closure.txt
+nix path-info -r .#myapp > store-paths.txt
 
-# Create closure ConfigMap
+# Create store paths ConfigMap
 kubectl create configmap myapp \
-  --from-file=paths=closure.txt \
-  -l nix.cia.net/closure=true
+  --from-file=paths=store-paths.txt \
+  -l nix-store-operator.ghcr.io/mount=true
 
 # Deploy (mount the shared store)
 kubectl apply -f - <<EOF
@@ -45,7 +45,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: ghcr.io/nathanvaughn/nix-runner:latest
+          image: busybox:latest
           command: ["/nix/store/...-myapp/bin/myapp"]
           volumeMounts:
             - name: nix-store
@@ -67,7 +67,7 @@ Or use the helper:
 
 ## Rolling updates
 
-Version the ConfigMap name by closure hash. Both old and new closures coexist in the shared store during rollout. Delete the old ConfigMap after the rollout completes.
+Version the ConfigMap name by store path hash. Both old and new store paths coexist in the shared store during rollout. Delete the old ConfigMap after the rollout completes.
 
 ```bash
 ./deploy.sh myapp .#myapp   # creates myapp-abc123
@@ -83,6 +83,6 @@ Store paths not referenced by any ConfigMap can be safely removed. The daemon do
 ```bash
 comm -23 \
   <(ls /var/lib/nixfs/store | sort) \
-  <(kubectl get cm -A -l nix.cia.net/closure=true -o jsonpath='{.items[*].data.paths}' | tr ' ' '\n' | xargs -I{} basename {} | sort -u) \
+  <(kubectl get cm -A -l nix-store-operator.ghcr.io/mount=true -o jsonpath='{.items[*].data.paths}' | tr ' ' '\n' | xargs -I{} basename {} | sort -u) \
   | xargs -I{} rm -rf /var/lib/nixfs/store/{}
 ```

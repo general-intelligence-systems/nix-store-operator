@@ -10,13 +10,13 @@ FLAKE=$2
 store_path=$(nix build "$FLAKE" --no-link --print-out-paths)
 hash=$(basename "$store_path" | cut -c1-8)
 
-nix path-info -r "$store_path" > /tmp/closure.txt
+nix path-info -r "$store_path" > /tmp/store-paths.txt
 
 kubectl create configmap "${NAME}-${hash}" \
-  --from-file=paths=/tmp/closure.txt \
+  --from-file=paths=/tmp/store-paths.txt \
   --dry-run=client -o yaml | \
   kubectl label --local -f - \
-    nix.cia.net/closure=true \
+    nix-store-operator.ghcr.io/mount=true \
     -o yaml | kubectl apply -f -
 
 echo "ConfigMap ${NAME}-${hash} created"

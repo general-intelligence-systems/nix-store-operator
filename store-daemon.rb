@@ -2,13 +2,11 @@
 # frozen_string_literal: true
 
 require 'kubeclient'
-require 'async'
-require 'async/http/internet'
 require 'fileutils'
 
 STORE = ENV.fetch('STORE_ROOT', '/nix/store')
 CACHE = ENV.fetch('CACHE_URL', 'https://cache.nixos.org')
-LABEL = 'nix.cia.net/closure=true'
+LABEL = 'nix-store-operator.ghcr.io/mount=true'
 
 module StoreDaemon
   module_function
@@ -26,33 +24,16 @@ module StoreDaemon
     configmap.data&.paths&.lines&.map(&:strip)&.reject(&:empty?) || []
   end
 
-  def fetch(store_path, internet)
-    hash = File.basename(store_path)[0, 32]
-    $stderr.puts "fetching #{File.basename(store_path)}"
-
-    narinfo = internet.get("#{CACHE}/#{hash}.narinfo").read
-    url     = narinfo[/^URL: (.+)/, 1]
-    comp    = narinfo[/^Compression: (.+)/, 1] || 'xz'
-    decomp  = { 'xz' => 'xz -d', 'zstd' => 'zstd -d', 'bzip2' => 'bzip2 -d' }.fetch(comp, 'cat')
-
-    tmp = "#{STORE}/.tmp-#{hash}"
-    FileUtils.mkdir_p(tmp)
-    system("curl -sf '#{CACHE}/#{url}' | #{decomp} | nix-store --restore #{tmp}/out") or raise "fetch failed"
-    File.rename("#{tmp}/out", store_path)
-    FileUtils.rm_rf(tmp)
-  end
-
   def sync(configmap)
-    Async do
-      internet = Async::HTTP::Internet.new
-      missing = paths_from(configmap).reject { |p| File.exist?(p) }
+    wanted = paths_from(configmap)
+    missing = wanted.reject { |p| File.exist?(p) }
+    return if missing.empty?
 
-      missing.each do |store_path|
-        Async { fetch(store_path, internet) }
-      end
-    ensure
-      internet&.close
-    end
+    $stderr.puts "fetching #{missing.length} store paths"
+    missing.each { |p| $stderr.puts "  #{File.basename(p)}" }
+
+    system("nix", "copy", "--from", CACHE, "--no-check-sigs", *missing) or
+      $stderr.puts "WARNING: nix copy failed for some store paths"
   end
 
   def run
