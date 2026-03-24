@@ -8,7 +8,7 @@ on:
     branches: [trench]
 
 concurrency:
-  group: build-image-${{ github.ref }}
+  group: build-image
   cancel-in-progress: true
 
 env:
