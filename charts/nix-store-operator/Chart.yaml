@@ -1,5 +1,5 @@
 apiVersion: v2
-name: store-daemon
+name: nix-store-operator
 description: Lazy nix store daemon for Kubernetes
 version: 0.1.0
 appVersion: "0.1.0"

@@ -14,7 +14,7 @@ A DaemonSet that lazily populates `/nix/store` on Kubernetes nodes from a binary
 ```bash
 helm repo add nix-store-operator https://general-intelligence-systems.github.io/nix-store-operator
 helm repo update
-helm install store-daemon nix-store-operator/store-daemon
+helm install nix-store-operator nix-store-operator/nix-store-operator
 ```
 
 ## Flake lib
