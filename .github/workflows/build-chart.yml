@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: build-chart
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pages: write

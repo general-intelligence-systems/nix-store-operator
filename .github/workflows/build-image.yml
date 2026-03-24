@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [trench]
 
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
