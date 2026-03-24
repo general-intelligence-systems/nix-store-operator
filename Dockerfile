@@ -5,7 +5,7 @@ RUN gem install kubeclient --no-document
 
 # Stage 2: Extract nix binary and its store closure
 FROM nixos/nix:latest AS nix
-RUN nix-store -qR $(which nix) | tar -cf /nix-closure.tar -T - -C /
+RUN nix-store -qR $(which nix) | tar -cPf /nix-closure.tar -T -
 
 # Stage 3: Final image
 FROM ruby:slim
@@ -13,7 +13,7 @@ FROM ruby:slim
 RUN apt-get update && apt-get install -y ca-certificates xz-utils && rm -rf /var/lib/apt/lists/*
 
 COPY --from=nix /nix-closure.tar /tmp/nix-closure.tar
-RUN tar -xf /tmp/nix-closure.tar -C / && rm /tmp/nix-closure.tar
+RUN tar -xPf /tmp/nix-closure.tar && rm /tmp/nix-closure.tar
 COPY --from=nix /root/.nix-profile /root/.nix-profile
 
 COPY --from=gems /usr/local/bundle /usr/local/bundle
