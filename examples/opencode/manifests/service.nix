@@ -8,12 +8,20 @@
   };
   spec = {
     selector.app = "opencode-server";
-    ports = [{
-      name = "http";
-      port = 4096;
-      targetPort = "http";
-      protocol = "TCP";
-    }];
+    ports = [
+      {
+        name = "opencode";
+        port = 4096;
+        targetPort = "opencode";
+        protocol = "TCP";
+      }
+      {
+        name = "api";
+        port = 3000;
+        targetPort = "api";
+        protocol = "TCP";
+      }
+    ];
     type = "ClusterIP";
   };
 }
