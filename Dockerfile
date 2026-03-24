@@ -5,6 +5,7 @@ RUN gem install kubeclient --no-document
 
 # Stage 2: Keep only the nix binary's store closure
 FROM nixos/nix:latest AS nix
+ENV PATH="/root/.nix-profile/bin:${PATH}"
 RUN nix-store -qR $(which nix) > /keep.txt \
  && find /nix/store -maxdepth 1 -mindepth 1 | while read p; do \
       grep -qx "$p" /keep.txt || rm -rf "$p"; \
