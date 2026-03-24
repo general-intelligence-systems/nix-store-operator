@@ -25,3 +25,23 @@ Pushing the tag triggers two GitHub Actions workflows:
 - **`build-chart.yml`** - Packages the Helm chart from `charts/` and publishes it to the `gh-pages` branch using `helm/chart-releaser-action`.
 
 Do **not** manually edit `.github/release-version` or create tags by hand. Always use `bin/tag-release`.
+
+## Flake Lib
+
+This repo is a nix flake that exports `lib.mkStorePaths`. This is the helper that consuming app flakes use to compute their store paths.
+
+```nix
+mkStorePaths = { pkgs }: drv:
+  "${pkgs.closureInfo { rootPaths = [ drv ]; }}/store-paths";
+```
+
+It takes a derivation and returns the path to a file containing its full transitive `/nix/store` dependency list. Consuming flakes expose this as a `packages.<system>.store-paths` output.
+
+The openkrill module (`apps/stable/nix-store-operator`) reads these paths via `builtins.readFile` (IFD) and embeds them in ConfigMaps labeled `nix-store-operator.ghcr.io/mount=true`.
+
+## Architecture
+
+- **Operator** (`store-daemon.rb`) — DaemonSet that watches labeled ConfigMaps and runs `nix copy --from <cache>` to fetch missing store paths onto each node
+- **Helm chart** (`charts/store-daemon/`) — deploys the operator; published to gh-pages and will be added to nixhelm
+- **Flake lib** (`flake.nix`) — `lib.mkStorePaths` helper for consuming flakes
+- **Openkrill module** — lives in the openkrill repo at `apps/stable/nix-store-operator/`, generates ConfigMaps from flake inputs
