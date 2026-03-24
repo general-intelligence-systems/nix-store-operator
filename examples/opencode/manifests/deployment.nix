@@ -1,4 +1,9 @@
-{
+{ lib, image, ocBin }:
+
+let
+  sidecar = lib.mkSidecar { inherit image; };
+  nixVol  = lib.mkNixVolume;
+in {
   apiVersion = "apps/v1";
   kind = "Deployment";
   metadata = {
@@ -12,95 +17,59 @@
     template = {
       metadata.labels.app = "opencode-server";
       spec = {
-        containers = [
-          # ── fuse-daemon sidecar ──────────────────────────────────
-          # Mounts FUSE on the shared volume. The real /nix/store in
-          # this container has the opencode derivation (baked into
-          # the image) and nix for fetching cached deps on demand.
-          {
-            name = "fuse-daemon";
-            image = "opencode-fuse-daemon:latest";
-            securityContext.privileged = true;
-            volumeMounts = [{
-              name = "nix";
-              mountPath = "/mnt/nix";
-              mountPropagation = "Bidirectional";
-            }];
-            command = [ "ruby" "/bin/fuse-daemon"
-              "--root"      "/data/store"
-              "--mount"     "/mnt/nix/store"
-              "--whitelist" "/etc/nix/store-whitelist"
-            ];
-            readinessProbe = {
-              exec.command = [ "test" "-d" "/mnt/nix/store" ];
-              initialDelaySeconds = 2;
-              periodSeconds = 5;
-            };
-          }
+        # Native sidecar (k8s >= 1.28): starts before containers, runs for pod lifetime
+        initContainers = [ sidecar ];
 
-          # ── opencode app ────────────────────────────────────────
-          # Mounts the shared volume at /nix. All /nix/store accesses
-          # go through the FUSE mount served by the sidecar.
-          {
-            name = "opencode";
-            image = "busybox:latest";
-            command = [ "/nix/store/*-opencode-*/bin/opencode" "serve"
-              "--hostname" "0.0.0.0"
-              "--port" "4096"
-            ];
-            ports = [{
-              name = "http";
-              containerPort = 4096;
-              protocol = "TCP";
-            }];
-            env = [
-              { name = "HOME"; value = "/home/opencode"; }
-              {
-                name = "OPENCODE_SERVER_PASSWORD";
-                valueFrom.secretKeyRef = {
-                  name = "opencode-server-auth";
-                  key = "password";
-                  optional = true;
-                };
-              }
-            ];
-            livenessProbe = {
-              httpGet = { path = "/global/health"; port = "http"; };
-              initialDelaySeconds = 10;
-              periodSeconds = 30;
-              timeoutSeconds = 5;
-              failureThreshold = 3;
-            };
-            readinessProbe = {
-              httpGet = { path = "/global/health"; port = "http"; };
-              initialDelaySeconds = 5;
-              periodSeconds = 10;
-              timeoutSeconds = 3;
-              failureThreshold = 2;
-            };
-            startupProbe = {
-              httpGet = { path = "/global/health"; port = "http"; };
-              initialDelaySeconds = 3;
-              periodSeconds = 5;
-              failureThreshold = 12;
-            };
-            resources = {
-              requests = { cpu = "100m"; memory = "256Mi"; };
-              limits = { cpu = "1"; memory = "1Gi"; };
-            };
-            volumeMounts = [
-              {
-                name = "nix";
-                mountPath = "/nix";
-                mountPropagation = "HostToContainer";
-                readOnly = true;
-              }
-              { name = "home"; mountPath = "/home/opencode"; }
-            ];
-          }
-        ];
+        containers = [{
+          name = "opencode";
+          image = "busybox:latest";
+          command = [ "/bin/sh" "-c" ''
+            echo "waiting for nix store..."
+            while ! ls /nix/store/${ocBin}/bin/opencode 2>/dev/null; do sleep 1; done
+            exec /nix/store/${ocBin}/bin/opencode serve --hostname 0.0.0.0 --port 4096
+          '' ];
+          ports = [{
+            name = "http";
+            containerPort = 4096;
+            protocol = "TCP";
+          }];
+          env = [
+            { name = "HOME"; value = "/home/opencode"; }
+            {
+              name = "OPENCODE_SERVER_PASSWORD";
+              valueFrom.secretKeyRef = {
+                name = "opencode-server-auth";
+                key = "password";
+                optional = true;
+              };
+            }
+          ];
+          startupProbe = {
+            httpGet = { path = "/doc"; port = "http"; };
+            initialDelaySeconds = 5;
+            periodSeconds = 5;
+            failureThreshold = 60;
+          };
+          readinessProbe = {
+            httpGet = { path = "/doc"; port = "http"; };
+            periodSeconds = 10;
+          };
+          livenessProbe = {
+            httpGet = { path = "/doc"; port = "http"; };
+            periodSeconds = 30;
+          };
+          resources = {
+            requests = { cpu = "100m"; memory = "256Mi"; };
+            limits = { cpu = "1"; memory = "1Gi"; };
+          };
+          volumeMounts = [
+            nixVol.mount
+            { name = "home"; mountPath = "/home/opencode"; }
+          ];
+        }];
+
         volumes = [
-          { name = "nix"; emptyDir = {}; }
+          nixVol.volume
           { name = "home"; emptyDir = {}; }
         ];
       };

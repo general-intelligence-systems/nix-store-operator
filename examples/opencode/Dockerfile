@@ -1,18 +1,18 @@
-FROM ruby:3.3-alpine
+# Base image is the fuse-daemon published by the nix-store-operator CI.
+# It contains: ruby, rfuse, nix-download, fuse-daemon.rb
+FROM ghcr.io/general-intelligence-systems/nix-store-operator:latest
 
-RUN apk add --no-cache fuse ca-certificates \
- && gem install rfuse --no-document \
- && echo "user_allow_other" > /etc/fuse.conf
-
-ADD https://github.com/simonfxr/nix-download/releases/download/v0.2.0/nix-download_0.2.0_linux_amd64 /usr/local/bin/nix-download
-RUN chmod +x /usr/local/bin/nix-download
-
-COPY fuse-daemon.rb /bin/fuse-daemon
-RUN chmod +x /bin/fuse-daemon
-
-# Pre-built store path and whitelist — built externally by bin/test-opencode
-COPY store-whitelist /etc/nix/store-whitelist
-RUN mkdir -p /data/store
-COPY opencode-store-path /data/store/
-
-ENTRYPOINT ["ruby", "/bin/fuse-daemon"]
+# These are produced by the flake:
+#
+#   nix build .#whitelist   -> result is the store-whitelist file
+#   nix build .#app-store   -> result/ contains non-cached store paths
+#
+# Then build the image:
+#
+#   docker build \
+#     --build-context whitelist=$(nix build .#whitelist --no-link --print-out-paths) \
+#     --build-context app-store=$(nix build .#app-store --no-link --print-out-paths) \
+#     -t opencode-fuse-daemon:latest .
+#
+COPY --from=whitelist / /etc/nix/store-whitelist
+COPY --from=app-store / /data/store/
