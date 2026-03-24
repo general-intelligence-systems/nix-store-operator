@@ -3,13 +3,18 @@
 #   nix build nixpkgs#hello --print-out-paths
 #   nix path-info -r nixpkgs#hello > store-paths.txt
 #
-# Step 2: Create the ConfigMap
+# Step 2: Create the ConfigMap (name becomes the mount directory)
 #
-#   kubectl create configmap hello-abc123 \
+#   kubectl create configmap hello \
 #     --from-file=paths=store-paths.txt \
 #     -l nix-store-operator.ghcr.io/mount=true
 #
 # Step 3: Apply this deployment
+#
+# The store daemon will:
+#   1. Fetch the listed store paths from the binary cache
+#   2. Create /var/lib/nixfs/mounts/hello/ with hard links to only
+#      the whitelisted paths — no other store paths are visible
 
 apiVersion: apps/v1
 kind: Deployment
@@ -36,5 +41,5 @@ spec:
       volumes:
         - name: nix-store
           hostPath:
-            path: /var/lib/nixfs/store
-            type: DirectoryOrCreate
+            path: /var/lib/nixfs/mounts/hello
+            type: Directory

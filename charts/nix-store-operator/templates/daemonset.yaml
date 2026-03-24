@@ -15,18 +15,26 @@ spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       containers:
         - name: store-daemon
-          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: STORE_ROOT
               value: {{ .Values.storeRoot }}
             - name: CACHE_URL
               value: {{ .Values.cacheUrl }}
+            - name: MOUNTS_ROOT
+              value: {{ .Values.mountsPath }}
           volumeMounts:
             - name: nix-store
               mountPath: {{ .Values.storeRoot }}
+            - name: mounts
+              mountPath: {{ .Values.mountsPath }}
       volumes:
         - name: nix-store
           hostPath:
             path: {{ .Values.hostStorePath }}
+            type: DirectoryOrCreate
+        - name: mounts
+          hostPath:
+            path: {{ .Values.mountsPath }}
             type: DirectoryOrCreate
