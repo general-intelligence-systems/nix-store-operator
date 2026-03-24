@@ -1,0 +1,40 @@
+# Step 1: Build and generate closure list
+#
+#   nix build nixpkgs#hello --print-out-paths
+#   nix path-info -r nixpkgs#hello > closure.txt
+#
+# Step 2: Create the ConfigMap
+#
+#   kubectl create configmap hello-abc123 \
+#     --from-file=paths=closure.txt \
+#     -l nix.cia.net/closure=true
+#
+# Step 3: Apply this deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+        - name: hello
+          image: ghcr.io/nathanvaughn/nix-runner:latest
+          command: ["/nix/store/dbghhbq1x39yxgkv3vkgfwbxrmw9nfzi-hello-2.12.1/bin/hello"]
+          volumeMounts:
+            - name: nix-store
+              mountPath: /nix/store
+              readOnly: true
+      volumes:
+        - name: nix-store
+          hostPath:
+            path: /var/lib/nixfs/store
+            type: DirectoryOrCreate

@@ -1,0 +1,13 @@
+image:
+  repository: ghcr.io/nathanvaughn/store-daemon
+  tag: latest
+  pullPolicy: IfNotPresent
+
+storeRoot: /nix/store
+hostStorePath: /var/lib/nixfs/store
+cacheUrl: https://cache.nixos.org
+
+serviceAccount:
+  name: store-daemon
+
+namespace: nix-system

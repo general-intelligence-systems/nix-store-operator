@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: store-daemon
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: store-daemon
+  template:
+    metadata:
+      labels:
+        app: store-daemon
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: store-daemon
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: STORE_ROOT
+              value: {{ .Values.storeRoot }}
+            - name: CACHE_URL
+              value: {{ .Values.cacheUrl }}
+          volumeMounts:
+            - name: nix-store
+              mountPath: {{ .Values.storeRoot }}
+      volumes:
+        - name: nix-store
+          hostPath:
+            path: {{ .Values.hostStorePath }}
+            type: DirectoryOrCreate
