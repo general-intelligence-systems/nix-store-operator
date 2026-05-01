@@ -1,5 +1,7 @@
 # nix-store-operator
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/general-intelligence-systems/nix-store-operator)
+
 A DaemonSet that lazily populates `/nix/store` on Kubernetes nodes from a binary cache. App pods mount the shared store and run nix-built binaries directly — no fat container images required beyond a minimal runner.
 
 ## How it works
